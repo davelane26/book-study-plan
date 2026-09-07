@@ -82,66 +82,72 @@ CHAPTER_TITLES = [
 ]
 
 
-def fetch_book_text():
-    """Download the book page and return its plain text content."""
+def fetch_book_soup():
+    """Download the book page and return its parsed DOM."""
     resp = requests.get(BOOK_URL, timeout=30)
     resp.raise_for_status()
-    soup = BeautifulSoup(resp.text, "html.parser")
-    return soup.get_text(separator="\n")
+    return BeautifulSoup(resp.text, "html.parser")
 
 
-def split_into_chapters(full_text):
-    """Split the book's full text into a list of (chapter_number, title, body)."""
-    # The chapter number and title live in separate HTML elements
-    # (a "chapter-number" div followed by the heading text), so after
-    # get_text(separator="\n") they're joined by whitespace/newlines
-    # rather than a single space — match flexibly instead of using a
-    # literal "Chapter N Title" needle.
-    def heading_pattern(i, title):
-        return re.compile(
-            r"Chapter\s+" + str(i) + r"\s+" + re.escape(title), re.IGNORECASE
+def _clean_text(el):
+    """Get an element's text with inline tags joined by spaces, and any
+    incidental whitespace/newlines (the page's HTML source is itself
+    line-wrapped inside <p> tags) collapsed to single spaces."""
+    return re.sub(r"\s+", " ", el.get_text(separator=" ", strip=True)).strip()
+
+
+def split_into_chapters(soup):
+    """Extract each chapter's title and paragraphs straight from the page's
+    DOM (one <div class="chapter ..."> per chapter, holding an
+    <h4 class="books-chapter-title"> heading and its <p> paragraphs).
+
+    This reads real <p> boundaries as the paragraph breaks, rather than
+    flattening the whole page to text first and re-deriving paragraphs by
+    splitting on newlines — the source HTML has incidental line-wrapping
+    newlines *inside* a single <p>, which a newline-split would wrongly
+    treat as paragraph breaks and could scatter one sentence across two
+    different days' chunks.
+    """
+    chapter_divs = soup.select("div.book-chapters div.chapter")
+    if len(chapter_divs) != len(CHAPTER_TITLES):
+        raise RuntimeError(
+            f"Expected {len(CHAPTER_TITLES)} chapters, found {len(chapter_divs)}. "
+            f"The book's page structure may have changed — check CHAPTER_TITLES "
+            f"and the chapter div selector in this script."
         )
 
-    markers = []
-    for i, title in enumerate(CHAPTER_TITLES, start=1):
-        m = heading_pattern(i, title).search(full_text)
-        if not m:
+    chapters = []
+    for i, (div, expected_title) in enumerate(zip(chapter_divs, CHAPTER_TITLES), start=1):
+        heading = div.find("h4", class_="books-chapter-title")
+        number_div = heading.find("div", class_="chapter-number") if heading else None
+        title = ""
+        if heading:
+            number_text = _clean_text(number_div) if number_div else ""
+            full_text = _clean_text(heading)
+            title = full_text[len(number_text):].strip() if number_text else full_text
+
+        if title != expected_title:
             raise RuntimeError(
-                f"Could not find heading for chapter {i} ('{title}'). "
+                f"Chapter {i} heading is '{title}', expected '{expected_title}'. "
                 f"The book's page structure or chapter titles may have changed — "
                 f"update CHAPTER_TITLES in this script."
             )
-        markers.append((m.end(), i, title))
 
-    chapters = []
-    for j, (start_idx, num, title) in enumerate(markers):
-        end_idx = markers[j + 1][0] if j + 1 < len(markers) else len(full_text)
-        # back up end_idx to before the *next* heading text, not after it
-        if j + 1 < len(markers):
-            next_num, next_title = markers[j + 1][1], markers[j + 1][2]
-            next_m = heading_pattern(next_num, next_title).search(full_text, start_idx)
-            end_idx = next_m.start() if next_m else end_idx
-        body = full_text[start_idx:end_idx].strip()
-        chapters.append({"number": num, "title": title, "body": body})
+        paragraphs = [_clean_text(p) for p in div.find_all("p")]
+        paragraphs = [p for p in paragraphs if p]
+
+        chapters.append({"number": i, "title": title, "paragraphs": paragraphs})
 
     return chapters
 
 
 def paragraphs_with_chapter_labels(chapters):
-    """Flatten all chapters into an ordered list of (chapter_num, chapter_title, paragraph_text)."""
+    """Flatten all chapters into an ordered list of (chapter_num, chapter_title, paragraph_text).
+    Paragraph boundaries come straight from the page's own <p> tags (see
+    split_into_chapters), so no further splitting/merging is needed here."""
     flat = []
     for ch in chapters:
-        # Split on blank lines / newlines into paragraphs, dropping empties
-        paras = [p.strip() for p in re.split(r"\n\s*\n|\n", ch["body"]) if p.strip()]
-        # Merge very short fragments (artifacts of the text extraction) into
-        # neighboring paragraphs so we don't create tiny noisy chunks.
-        merged = []
-        for p in paras:
-            if merged and len(p) < 40:
-                merged[-1] += " " + p
-            else:
-                merged.append(p)
-        for p in merged:
+        for p in ch["paragraphs"]:
             flat.append((ch["number"], ch["title"], p))
     return flat
 
@@ -213,12 +219,12 @@ def distribute_across_days(flat_paragraphs, num_days):
 def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    print("Fetching book text...")
-    full_text = fetch_book_text()
-    print(f"  -> {len(full_text)} characters fetched")
+    print("Fetching book page...")
+    soup = fetch_book_soup()
+    print("  -> page fetched")
 
     print("Splitting into chapters...")
-    chapters = split_into_chapters(full_text)
+    chapters = split_into_chapters(soup)
     print(f"  -> {len(chapters)} chapters found")
 
     flat_paragraphs = paragraphs_with_chapter_labels(chapters)

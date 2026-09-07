@@ -92,26 +92,35 @@ def fetch_book_text():
 
 def split_into_chapters(full_text):
     """Split the book's full text into a list of (chapter_number, title, body)."""
+    # The chapter number and title live in separate HTML elements
+    # (a "chapter-number" div followed by the heading text), so after
+    # get_text(separator="\n") they're joined by whitespace/newlines
+    # rather than a single space — match flexibly instead of using a
+    # literal "Chapter N Title" needle.
+    def heading_pattern(i, title):
+        return re.compile(
+            r"Chapter\s+" + str(i) + r"\s+" + re.escape(title), re.IGNORECASE
+        )
+
     markers = []
     for i, title in enumerate(CHAPTER_TITLES, start=1):
-        needle = f"Chapter {i} {title}"
-        idx = full_text.find(needle)
-        if idx == -1:
+        m = heading_pattern(i, title).search(full_text)
+        if not m:
             raise RuntimeError(
                 f"Could not find heading for chapter {i} ('{title}'). "
                 f"The book's page structure or chapter titles may have changed — "
                 f"update CHAPTER_TITLES in this script."
             )
-        markers.append((idx + len(needle), i, title))
+        markers.append((m.end(), i, title))
 
     chapters = []
     for j, (start_idx, num, title) in enumerate(markers):
         end_idx = markers[j + 1][0] if j + 1 < len(markers) else len(full_text)
         # back up end_idx to before the *next* heading text, not after it
         if j + 1 < len(markers):
-            next_needle = f"Chapter {markers[j+1][1]} {markers[j+1][2]}"
-            next_pos = full_text.find(next_needle, start_idx)
-            end_idx = next_pos if next_pos != -1 else end_idx
+            next_num, next_title = markers[j + 1][1], markers[j + 1][2]
+            next_m = heading_pattern(next_num, next_title).search(full_text, start_idx)
+            end_idx = next_m.start() if next_m else end_idx
         body = full_text[start_idx:end_idx].strip()
         chapters.append({"number": num, "title": title, "body": body})
 

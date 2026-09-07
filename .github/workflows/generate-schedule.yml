@@ -1,0 +1,33 @@
+name: Generate Book Study Schedule
+
+# Manual trigger only — this only needs to be run ONCE to build the
+# whole Mon-Sat schedule through Dec 31. Re-run it only if you want to
+# regenerate/reset the schedule from today's date forward.
+on:
+  workflow_dispatch: {}
+
+jobs:
+  generate-schedule:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate schedule
+        run: python generate_book_schedule.py
+
+      - name: Commit schedule back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/book-schedule.json
+          git commit -m "Generate book study schedule" || echo "Nothing to commit"
+          git push

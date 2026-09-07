@@ -1,2 +1,4 @@
 requests
 beautifulsoup4
+gTTS
+slack_sdk

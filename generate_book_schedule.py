@@ -152,68 +152,18 @@ def paragraphs_with_chapter_labels(chapters):
     return flat
 
 
-def get_study_dates():
-    """Every Monday-Saturday date from today through Dec 31 of this year."""
-    today = date.today()
-    end = date(today.year, 12, 31)
+START_DATE = date(2026, 9, 7)
+
+
+def get_study_dates(num_days=72):
+    """Every Monday-Saturday date starting at START_DATE for num_days total."""
     dates = []
-    d = today
-    while d <= end:
+    d = START_DATE
+    while len(dates) < num_days:
         if d.weekday() != 6:  # 6 = Sunday
             dates.append(d)
         d += timedelta(days=1)
     return dates
-
-
-def distribute_across_days(flat_paragraphs, num_days):
-    """Greedily bin the flattened paragraphs into num_days chunks, splitting
-    only between paragraphs (never mid-sentence), aiming for even pacing."""
-    total_words = sum(len(p[2].split()) for p in flat_paragraphs)
-    days = []
-    idx = 0
-    n = len(flat_paragraphs)
-
-    for day_num in range(num_days):
-        remaining_days = num_days - day_num
-        remaining_words = sum(len(p[2].split()) for p in flat_paragraphs[idx:])
-        target = remaining_words / remaining_days if remaining_days else remaining_words
-
-        bucket = []
-        bucket_words = 0
-        chapters_touched = set()
-
-        while idx < n:
-            ch_num, ch_title, para = flat_paragraphs[idx]
-            para_words = len(para.split())
-            # Always take at least one paragraph per day so no day is empty
-            if bucket and bucket_words + para_words > target * 1.15:
-                break
-            bucket.append(para)
-            chapters_touched.add((ch_num, ch_title))
-            bucket_words += para_words
-            idx += 1
-            if bucket_words >= target:
-                break
-
-        if not bucket:
-            break
-
-        chapters_touched = sorted(chapters_touched)
-        days.append({
-            "text": "\n\n".join(bucket),
-            "chapters": [{"number": c, "title": t} for c, t in chapters_touched],
-        })
-
-    # If any paragraphs are left over (rounding), append them to the last day
-    if idx < n:
-        leftover = flat_paragraphs[idx:]
-        days[-1]["text"] += "\n\n" + "\n\n".join(p[2] for p in leftover)
-        for c, t in {(p[0], p[1]) for p in leftover}:
-            if not any(ch["number"] == c for ch in days[-1]["chapters"]):
-                days[-1]["chapters"].append({"number": c, "title": t})
-        days[-1]["chapters"].sort(key=lambda c: c["number"])
-
-    return days
 
 
 def main():
@@ -227,19 +177,21 @@ def main():
     chapters = split_into_chapters(soup)
     print(f"  -> {len(chapters)} chapters found")
 
-    flat_paragraphs = paragraphs_with_chapter_labels(chapters)
-    total_words = sum(len(p[2].split()) for p in flat_paragraphs)
-    print(f"  -> {len(flat_paragraphs)} paragraphs, {total_words} words total")
+    total_words = sum(sum(len(p.split()) for p in ch["paragraphs"]) for ch in chapters)
+    total_paras = sum(len(ch["paragraphs"]) for ch in chapters)
+    print(f"  -> {total_paras} paragraphs, {total_words} words total across {len(chapters)} chapters")
 
-    study_dates = get_study_dates()
-    print(f"Spreading across {len(study_dates)} study days "
+    study_dates = get_study_dates(len(chapters))
+    print(f"Scheduling 1 chapter per day across {len(study_dates)} study days "
           f"({study_dates[0]} to {study_dates[-1]}, Mon-Sat only)...")
 
-    day_chunks = distribute_across_days(flat_paragraphs, len(study_dates))
-
     schedule = {}
-    for d, chunk in zip(study_dates, day_chunks):
-        schedule[d.isoformat()] = chunk
+    for day_num, (d, ch) in enumerate(zip(study_dates, chapters), start=1):
+        schedule[d.isoformat()] = {
+            "day": day_num,
+            "text": "\n\n".join(ch["paragraphs"]),
+            "chapters": [{"number": ch["number"], "title": ch["title"]}],
+        }
 
     payload = {
         "book_title": BOOK_TITLE,
@@ -255,7 +207,7 @@ def main():
 
     avg_words = total_words / len(study_dates)
     print(f"Saved schedule to {SCHEDULE_PATH}")
-    print(f"Average ~{avg_words:.0f} words/day across {len(study_dates)} days.")
+    print(f"1 chapter/day: Average ~{avg_words:.0f} words/day across {len(study_dates)} days.")
 
 
 if __name__ == "__main__":
